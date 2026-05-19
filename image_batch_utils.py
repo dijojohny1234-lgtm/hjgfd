@@ -1,0 +1,112 @@
+
+import torch
+import comfy.utils
+
+class ImageListToImageBatch:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+                        "images": ("IMAGE", ),
+                        "device": (["auto", "cpu", "gpu"],),
+                      }
+                }
+
+    INPUT_IS_LIST = True
+
+    RETURN_TYPES = ("IMAGE", )
+    FUNCTION = "doit"
+
+    CATEGORY = "Swwan/image"
+
+    def doit(self, images, device):
+        # Handle device parameter (it comes as a list due to INPUT_IS_LIST)
+        device_choice = device[0] if isinstance(device, list) else device
+
+        if len(images) == 0:
+            return ()
+        if len(images) == 1:
+            img = images[0]
+            if img.ndim == 3:  # add batch dim if missing
+                img = img.unsqueeze(0)
+            # Move to target device
+            img = self._move_to_device(img, device_choice)
+            return (img,)
+
+        # Start with the first image
+        image1 = images[0]
+        if image1.ndim == 3:
+            image1 = image1.unsqueeze(0)
+
+        # Move to target device
+        image1 = self._move_to_device(image1, device_choice)
+
+        for image2 in images[1:]:
+            # Ensure batch dim
+            if image2.ndim == 3:
+                image2 = image2.unsqueeze(0)
+
+            # Move to target device first (before any operations)
+            if image2.device != image1.device:
+                image2 = image2.to(image1.device)
+
+            # Ensure HxW match exactly
+            H, W = image1.shape[1], image1.shape[2]
+            if image2.shape[1] != H or image2.shape[2] != W:
+                image2 = comfy.utils.common_upscale(
+                    image2.movedim(-1, 1),  # move channels first
+                    W,  # width
+                    H,  # height
+                    "lanczos",
+                    "center"
+                ).movedim(1, -1)  # move channels back last
+
+            # Ensure channels match
+            if image2.shape[3] != image1.shape[3]:
+                # simple fix: truncate or pad channels
+                min_C = min(image1.shape[3], image2.shape[3])
+                image1 = image1[:, :, :, :min_C]
+                image2 = image2[:, :, :, :min_C]
+
+            # Concatenate along batch dimension
+            image1 = torch.cat((image1, image2), dim=0)
+
+        return (image1,)
+
+    def _move_to_device(self, tensor, device_choice):
+        """Move tensor to specified device"""
+        if device_choice == "cpu":
+            return tensor.cpu()
+        elif device_choice == "gpu":
+            if torch.cuda.is_available():
+                return tensor.cuda()
+            else:
+                print("Warning: GPU not available, using CPU instead")
+                return tensor.cpu()
+        else:  # auto
+            return tensor  # Keep on current device
+
+
+class ImageBatchToImageList:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"image": ("IMAGE",), }}
+
+    RETURN_TYPES = ("IMAGE",)
+    OUTPUT_IS_LIST = (True,)
+    FUNCTION = "doit"
+
+    CATEGORY = "Swwan/image"
+
+    def doit(self, image):
+        images = [image[i:i + 1, ...] for i in range(image.shape[0])]
+        return (images, )
+
+NODE_CLASS_MAPPINGS = {
+    "SwwanImageListToImageBatch": ImageListToImageBatch,
+    "SwwanImageBatchToImageList": ImageBatchToImageList,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "SwwanImageListToImageBatch": "Image List to Image Batch",
+    "SwwanImageBatchToImageList": "Image Batch to Image List",
+}
